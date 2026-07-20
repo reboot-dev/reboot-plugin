@@ -10,9 +10,11 @@ tags: project, shell, rbtrc, pyproject, python-version, main, application-entry,
 The `python` skill covers the canonical project shape
 (`lifecycle-project-setup.md`) and the `.rbtrc` format
 (`lifecycle-rbtrc.md`). That shape includes a project-root
-`.mypy.ini` (template in `lifecycle-project-setup.md`) — create it
-when scaffolding; it has no chat-app delta. What an MCP Chat App
-adds on top:
+`.mypy.ini` and a project-root `.gitignore` (templates in
+`lifecycle-project-setup.md`) — create both when scaffolding; they
+have no chat-app delta (the base `.gitignore` already covers
+`frontend/api/`, `frontend/dist/`, and `node_modules/`). What an
+MCP Chat App adds on top:
 
 ### `.python-version`
 
@@ -25,7 +27,7 @@ adds on top:
 Same shape as `python/references/lifecycle-rbtrc.md`. Chat
 apps add `--default-config=hmr` plus `:hmr` and `:dist` named
 configs that route Envoy to a Vite dev server (HMR) or a built
-`web/dist/` (production):
+`frontend/dist/` (production):
 
 ```
 # Find API definitions in 'api/'.
@@ -34,9 +36,8 @@ generate api/
 # Tell `rbt generate` where to put generated files.
 generate --python=backend/api/
 
-# Generate React bindings for web apps (into "web/api/").
-generate --react=web/api
-generate --react-extensions
+# Generate React bindings for web apps (into "frontend/api/").
+generate --react=frontend/api
 
 # Watch if any source files are modified.
 dev run --watch=backend/**/*.py
@@ -59,14 +60,16 @@ dev run --application=backend/src/main.py
 dev run --default-config=hmr
 
 # HMR: Vite dev server proxied through Envoy.
-# Run Vite in a separate terminal: cd web && npm run dev
-# Envoy routes "/__/web/**" to Vite for HMR support.
-dev run:hmr --mcp-frontend-host=http://localhost:4444
+# Run Vite in a separate terminal: cd frontend && npm run dev
+# Envoy routes "/__/frontend/**" to Vite for HMR support.
+dev run --frontend-root-path=frontend
 
-# Dist mode: serve pre-built artifacts from "web/dist/" (no Vite HMR).
+dev run:hmr --frontend-host=http://localhost:4444
+
+# Dist mode: serve pre-built artifacts from "frontend/dist/" (no Vite HMR).
 # Usage: uv run rbt dev run --config=dist
-# Requires: cd web && npm run build
-dev run:dist --mcp-frontend-host=""
+# Requires: cd frontend && npm run build
+dev run:dist --frontend-dist-path=frontend/dist
 
 # When expunging, expunge that state we've saved.
 dev expunge --application-name=<project-name>
@@ -77,6 +80,7 @@ dev expunge --application-name=<project-name>
 # block above, minus the dev-only knobs (`--watch`, `--env-file`,
 # the `:hmr`/`:dist` configs).
 serve run --python
+serve run --frontend-dist-path=frontend/dist --frontend-root-path=frontend
 serve run --application=backend/src/main.py
 serve run --application-name=<project-name>
 serve run --tls=external
