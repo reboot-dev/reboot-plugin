@@ -224,6 +224,17 @@ docs would have prevented. Before writing code, load the references
 the task actually requires from the lists below. "Common gotchas"
 should be loaded for almost every task.
 
+Everything you read stays in the conversation and is re-sent on every
+later turn, so read a reference at the step that needs it rather than
+all of them up front, and read each one **once**. That cost is also
+why generated and installed source — `*_rbt.py`, `*_rbt_react.ts`,
+`site-packages/`, `node_modules/`, codegen templates — is the most
+expensive place in the system to learn a fact: the shapes worth
+knowing are written out in the references below. When something
+genuinely isn't covered, bound the output hard (a targeted
+`grep -n … | head -40`, or `sed -n '<start>,<end>p'` over a known
+range), never a whole generated file.
+
 ### Building a workflow
 
 - `references/servicer-workflow.md` — **the** single, comprehensive
@@ -477,6 +488,12 @@ above lists the right ones grouped by task type. The full catalog:
 - `references/testing-project-setup.md`
 - `references/testing-harness.md`
 - `references/testing-external-context.md`
+
+**Frontend** (shared by `web-app` and `chat-app`):
+
+- `references/react-generated-client.md` — what
+  `rbt generate --react=` emits: hook overloads, `Use<Type>Api`,
+  reader/mutation return shapes, typed errors, naming rules.
 
 **Patterns** (`patterns-`):
 

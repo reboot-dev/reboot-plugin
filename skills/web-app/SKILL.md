@@ -43,6 +43,9 @@ backend behind a standalone React frontend served at a normal URL.
 - Running an existing Reboot Web App — e.g. at the start of a new
   session: load the [`run` skill](../run/SKILL.md), which detects
   the app type and starts the backend and frontend.
+- Putting a finished Web App in production — load the
+  [`deploy` skill](../deploy/SKILL.md): backend on Reboot Cloud,
+  frontend on a static host under the user's own custom domain.
 
 ## How a Web App Differs From a Chat App
 
@@ -84,6 +87,17 @@ as MCP).
 > (anything that is not a Reboot-minted access JWT) falls
 > through to yours.
 
+The imports, so you don't have to go looking for them:
+
+```python
+from reboot.aio.applications import Application
+from reboot.aio.auth.oauth_providers import (
+    Development,
+    Google,                       # or GitHub, Auth0, …
+    OAuthProviderByEnvironment,
+)
+```
+
 Recommended sequence:
 
 1. **Early development (no provider chosen yet):** configure
@@ -104,76 +118,51 @@ Recommended sequence:
    `python/references/servicer-authorizer.md`,
    `python/references/auth-allow-if.md`, and
    `python/references/auth-built-in-predicates.md`. The
-   provider-selection rules are identical to MCP chat apps —
-   load the
+   The providers and what each needs:
+
+   All arguments are keyword-only.
+
+   | provider        | required arguments                        |
+   | --------------- | ----------------------------------------- |
+   | `Development()` | none — dev only, sign in as any identity  |
+   | `Anonymous()`   | none — every visitor is a fresh identity  |
+   | `Google(...)`   | `client_id=`, `client_secret=`            |
+   | `GitHub(...)`   | `client_id=`, `client_secret=`            |
+   | `Auth0(...)`    | `domain=`, `client_id=`, `client_secret=` |
+   | `Ory(...)`      | `domain=`, `client_id=`, `client_secret=` |
+
+   The registered providers (everything but `Development` and
+   `Anonymous`) also take `scopes=`, `claims=`, and
+   `store_tokens=`; register `/__/oauth/callback` as the redirect
+   URI with the provider.
+
+   Add `claims=[...]` when you need identity fields such as the
+   user's email, and `store_tokens=True` only when you will call
+   that provider's own API as the user. **Choose deliberately
+   before real users exist**: `context.auth.user_id` is namespaced
+   per provider, so switching providers after launch strands every
+   existing user's state. Only reach for
    [chat-app/references/auth-oauth-providers.md](../chat-app/references/auth-oauth-providers.md)
-   reference for the per-provider details (client IDs, scopes,
-   `store_tokens=True`, the user-ID-namespace gotcha when
-   switching providers post-launch). In unit tests, keep
+   if you need to write a custom provider or debug a specific
+   provider's flow. In unit tests, keep
    `token_verifier=<your IdP verifier>` exactly as in production —
    the test harness's OAuth server verifies the impersonation token
    minted by `await rbt.create_external_context_as(name, user_id)`,
    and a custom bearer a test constructs by hand still hits your IdP
    verifier; the authorizer rules run for real either way.
+
 3. **Public, unauthenticated endpoints** (health checks, public
    sign-up, public catalog reads): mark these explicitly with
    `allow()`. That's the one legitimate use.
 
-### Feeding the user's identity into hooks — never fabricate an id
+### Feeding the user's identity into hooks
 
-With `Application(oauth=...)`, the signed-in user's own state
-needs no id-threading at all: call the `User` hook with **no
-arguments** and branch on its `{ user, isLoading }` shape (see
-"Browser-side wiring (React)" below); the signed-in user's id —
-for passing into backend calls or other components — is
-`user.state_id`.
-
-An **explicit-id** call (`use<Type>({ id })`) needs a **real,
-non-empty actor id on every render**. It is not SWR-style: there
-is no "pass `null`/`undefined` to skip the subscription" mode. A
-falsy id is a hard throw during render, not a paused hook —
-`id: ''` throws `state ID must have a length of at least 1` and
-`id: undefined` throws a `TypeError` inside `stateIdToRef`. Either
-one crashes the component.
-
-The trap: browser identity resolves **asynchronously** (the
-`/__/oauth/whoami` probe under `oauth=`, or an external IdP like
-Auth0/Firebase under `token_verifier=`), so on the first renders
-you have no user id yet. Do **not** dodge the throw by
-fabricating a placeholder — `useUser({ id: userId || '__no-user__' })`
-is wrong. An actor id is a **global key**, so every loading session
-subscribes to the same shared `__no-user__` actor, it's one
-missed write-guard away from cross-user state, and the placeholder
-addresses nothing — it just silences the crash.
-
-Since an explicit-id hook can't be told "no id" and can't be
-called conditionally (React's rules of hooks), the fix is to **not
-mount the component that calls the hook until you have the real
-id**. Guard at the parent and pass a guaranteed-real id down. With
-`oauth=` that guard is the no-arguments `useUser()` pattern from
-"Browser-side wiring (React)" below — inside the signed-in
-subtree, `user.state_id` is guaranteed real. With an external IdP
-the shape is the same:
-
-```tsx
-function UserHome() {
-  const { user, isAuthenticated, isLoading } = useAuth0();
-  if (isLoading) return <Spinner />;
-  if (!isAuthenticated || !user?.sub) return <LoginPrompt />;
-  // From here, user.sub is guaranteed present and non-empty.
-  return <UserView userId={user.sub} />;
-}
-
-function UserView({ userId }: { userId: string }) {
-  // Hook always runs, always with a real, per-user id.
-  const { create } = useUser({ id: userId });
-  // ...
-}
-```
-
-No placeholder, no fake actor, no `userId && create(...)` guards
-scattered around mutations — the hook simply never runs until the
-key is real.
+With `Application(oauth=...)` the signed-in user's own state needs
+no id-threading: call the `User` hook with **no arguments**. For
+explicit-id hooks the rule is that the id must be real on every
+render — never a placeholder — which is covered with the rest of
+the hook mechanics in
+[`references/react-client.md`](references/react-client.md).
 
 ### Calling external APIs on the user's behalf
 
@@ -199,110 +188,77 @@ same recipe.
 
 ### Browser-side wiring (React)
 
-Wrap your app in `<RebootClientProvider>` and branch on the
-generated `useUser()` hook for the `User` state type — the same
-hook MCP-embedded UIs use. Called with no id, `useUser()` returns
-`{ user, isLoading }`: `isLoading` is true while the session probe
-(`/__/oauth/whoami`) is in flight, then `user` is the handle once
-signed in or `undefined` when signed out. Pass the resolved `user`
-handle to your signed-in subtree and read its id from
-`user.state_id`:
+All of it — the provider (and the `url` it must be given), the
+generated hook surface, sign-in/sign-out, reading typed errors, and
+why a hook's `id` must be real on every render — is in
+[`references/react-client.md`](references/react-client.md). Read it
+at the frontend step; don't reconstruct it from memory here.
 
-```tsx
-import {
-  RebootClientProvider,
-  useSignIn,
-  useSignOut,
-} from "@reboot-dev/reboot-react";
-import { UseUserApi, useUser } from "./gen/your_api/v1/your_api_rbt_react";
+## Which References to Read, and When
 
-function App() {
-  const { user, isLoading } = useUser();
-  const signIn = useSignIn();
-  const signOut = useSignOut();
-  if (isLoading) {
-    return <Spinner />;
-  }
-  if (user === undefined) {
-    return <button onClick={() => signIn()}>Sign in</button>;
-  }
-  return (
-    <>
-      <button onClick={() => signOut()}>Sign out</button>
-      <YourSignedInApp user={user} />
-    </>
-  );
-}
+Everything you read stays in the conversation and is re-sent on
+every later turn, so **read each reference at the step that needs
+it** — not all of them up front — and read each one **once**. The
+groups below are in build order, and each reference appears in
+exactly one of them — the step that needs it.
 
-// The signed-in subtree takes the `user` handle directly; read its
-// id from `user.state_id` and its readers/mutators off the handle.
-function YourSignedInApp({ user }: { user: UseUserApi }) {
-  const { response } = user.useWhoami();
-  // ...
-}
+> **Never read `chat-app/references/*` for a web app.** They cover
+> the MCP surface — `UI()` artifacts, the MCPJam inspector, the
+> nested `frontend/mcp/<name>/` Vite output, `mcp=Tool()` markers,
+> popping a widget out into a web app. Reaching into them costs
+> context and produces chat-app-shaped code (`mcp=None` on every
+> method of an app with no MCP surface). The web equivalents are
+> [`references/react-client.md`](references/react-client.md) and the
+> `python` references named below. The single exception is
+> [chat-app/references/auth-oauth-providers.md](../chat-app/references/auth-oauth-providers.md),
+> which is surface-neutral: read it when you pick a real provider.
 
-export default () => (
-  <RebootClientProvider>
-    <App />
-  </RebootClientProvider>
-);
-```
-
-## Read These From `python` First
-
-Before scaffolding, load the references that cover the backend
-mechanics. The patterns in this skill assume you've read them.
-
-**Always relevant:**
+**Before the API definition:**
 
 - `python/references/patterns-common-gotchas.md` — recurring trips
-  (`self.ref().state_id`, kwargs convention, `--name` vs.
-  `--application-name`, etc.).
+  (`self.ref().state_id`, kwargs convention, a `ref()` belongs to
+  one context, the auto-constructed `User` type, `--name` vs.
+  `--application-name`).
 - `python/references/api-pydantic.md` — pydantic API rules (every
   Field needs a zero-value default; non-Optional `Model`-typed
   fields can't take defaults).
-
-**Defining the API:**
-
 - `python/references/api-methods.md` — factory → context type
   mapping (Reader/Writer/Transaction/Workflow).
-- `python/references/api-errors.md` — typed errors.
-- `python/references/state-collections.md` — **always read when
-  the app has any "list of X" concept.** Decides whether each X
-  should be its own state `Type` (most of the time, yes) and picks
-  between in-state `list[Sub]`, in-state `list[str]` of foreign
-  IDs, or an `OrderedMap` of foreign IDs. The trap is
-  defaulting to `list[Todo]`/`list[Document]`/etc. on one parent
-  for entity collections — see Step 1 of that reference.
+- `python/references/api-errors.md` — typed errors, when the API
+  declares any.
+- `python/references/state-collections.md` — **always read when the
+  app has any "list of X" concept.** Decides whether each X should
+  be its own state `Type` (most of the time, yes) and picks between
+  in-state `list[Sub]`, in-state `list[str]` of foreign IDs, or an
+  `OrderedMap` of foreign IDs. The trap is defaulting to
+  `list[Todo]`/`list[Document]`/etc. on one parent for entity
+  collections — see Step 1 of that reference.
 - `python/references/state-nested-models.md` — the same rule from
   the nested-`Model` angle.
 
-**Implementing Servicers:**
+**Before the project shell** (`.rbtrc`, `pyproject.toml`,
+`.mypy.ini`, `main.py`):
 
-- `python/references/servicer-{reader,writer,transaction,constructor,authorizer}.md` — one per context type.
+- `python/references/lifecycle-{project-setup,rbtrc,application-entry,initialize-hook}.md` — the canonical layout, the CLI flags, the
+  `Application(...)` constructor, the `initialize` hook.
+
+**Before the servicer:**
+
+- `python/references/servicer-{reader,writer,transaction,constructor}.md` — one per context type you actually declared.
 - `python/references/rpc-refs.md` — `self.ref().state_id` (never
   `self.state_id`); `self.ref().schedule(...)`.
-- `python/references/rpc-calls.md` — kwargs not Request wrappers.
+- `python/references/rpc-calls.md` — kwargs, not Request wrappers.
 - `python/references/rpc-constructor-calls.md` —
   `Service.create(context, id)` semantics.
-
-**Workflows:**
-
-- `python/references/servicer-workflow.md` — the single,
-  comprehensive workflow reference. Read it top to bottom: the
-  `@classmethod` / `WorkflowContext` declaration shape, the
-  call-classification decision tree (Reboot scopes vs.
-  `at_least_once` vs. `at_most_once`), `context.loop`, inline state
-  writes,
+- `python/references/servicer-workflow.md` — only when you declared
+  a `Workflow`, and then top to bottom: the `@classmethod` /
+  `WorkflowContext` declaration shape, the call-classification
+  decision tree (Reboot scopes vs. `at_least_once` vs.
+  `at_most_once`), `context.loop`, inline state writes,
   `until` / `until_changes`, and workflow exit semantics.
 
-**Project shell:**
-
-- `python/references/lifecycle-{project-setup,rbtrc,application-entry,initialize-hook}.md` — the canonical layout,
-  the CLI flags, the `Application(...)` constructor, the
-  `initialize` hook.
-
-**Auth (browser users — see "Auth in Web Apps" below for the dev-vs-prod sequence):**
+**Before the authorizers** (browser users — see "Auth in Web Apps"
+above for the dev-vs-prod sequence):
 
 - `python/references/servicer-authorizer.md` — **start here**.
   Explains `oauth=` (the default) vs. `token_verifier=` (the
@@ -322,19 +278,58 @@ mechanics. The patterns in this skill assume you've read them.
   → read back + call inside a `Workflow`. Never a plain `str` token
   field.
 
-## Workflow: Plan First, Then Build
+**Before the frontend:**
 
-**Always plan the design and get approval before writing code.** The
-state model is the foundation — getting entities, field types, or
-method types wrong means regenerating everything across the project.
+- [`references/react-client.md`](references/react-client.md) — the
+  `web/` shell (Vite config, including the `server.host` the browser
+  needs), the backend URL (`VITE_REBOOT_URL` — the default detection
+  resolves to Vite's origin, not the backend's), sign-in/sign-out,
+  and how a typed backend error becomes a message the user sees.
+- `python/references/react-generated-client.md` — what
+  `rbt generate --react=` emits: the `use<Type>()` overloads, the
+  three-field reader return, why mutations resolve to
+  `{ response, aborted }` instead of throwing, the typed error
+  classes, and the snake→camel naming rules.
 
-### Plan Phase
+**Before the tests:** the three `python/references/testing-*.md`
+files, plus `python/references/patterns-idempotency.md` — it
+explains `IdempotencyUncertainError`, which is otherwise the one
+runtime error whose cause is not in any reference you have read.
+
+**Before running the app:** the [`run` skill](../run/SKILL.md).
+
+If you find yourself grepping the framework's installed source or a
+generated file to answer a question, the next section is for you —
+do not explore it in the main conversation.
+
+## Never Read Generated or Installed Source in the Main Thread
+
+`*_rbt.py`, `*_rbt_react.ts`, `site-packages/`, `node_modules/`,
+and codegen templates run to tens of thousands of lines. Every one
+you open is re-sent on every remaining turn, which makes reading
+them the most expensive way in the system to learn a fact.
+
+The generated surfaces you actually need are written out in these
+references — the React client in
+[`references/react-client.md`](references/react-client.md), the
+backend shapes in `python/references/`. Use them.
+
+If something genuinely isn't covered, bound the output hard: a
+targeted `grep -n … | head -40`, or `sed -n '<start>,<end>p'` over
+a known range. Never a whole generated file, never an unbounded
+recursive grep.
+
+## Workflow: Settle the Design, Then Build
+
+**Always settle the design before writing code.** The state model
+is the foundation — getting entities, field types, or method types
+wrong means regenerating everything across the project.
+
+### Design Phase
 
 1. Analyze the user's description using the State Model Assessment
    below.
-2. Begin a plan for the user to approve (in Claude Code, enter plan
-   mode; in Codex, present the plan and wait for the go-ahead).
-3. Present the proposed design:
+2. State the design you are about to build:
    - Application types: state shape (fields, types, tags).
    - Method map: which operations, which method type
      (Reader/Writer/Transaction/Workflow).
@@ -342,20 +337,19 @@ method types wrong means regenerating everything across the project.
      each page calls.
    - Auth: anonymous, logged-in, or per-user state? If per-user,
      declare a `User` type for owned data and route through it.
-4. Get user approval before writing any files.
-5. Then execute the Step-by-Step Build Flow.
+3. Then execute the Step-by-Step Build Flow.
 
-For updates to existing apps, still plan: read current state,
-propose changes, confirm, then modify.
+For updates to existing apps, still work the design first: read
+current state, state the changes, then modify.
 
-### Writing the Plan for Human Review
+### Writing the Design for a Human Reader
 
-The plan is read by a **human who has not read the skill files**.
-They are evaluating the design — entities, collections, methods,
+The design is read by a **human who has not read the skill files**.
+They are judging the design — entities, collections, methods,
 routes, auth — not verifying that you followed the skill. Write
-so the plan stands on its own.
+so it stands on its own.
 
-**Don't quote skill-internal terms** when presenting the plan.
+**Don't quote skill-internal terms** when presenting the design.
 They mean nothing outside this skill:
 
 - `Shape A` / `Shape B` / `Shape C` — name the actual data
@@ -404,7 +398,7 @@ Nested model — GOOD:
 > state actors because they have no lifecycle, methods, or auth
 > independent of the Document they belong to.
 
-**Escape hatch.** When the precise type name _is_ what the user
+**Escape hatch.** When the precise type name _is_ what the reader
 needs to see ("I'm proposing `OrderedMap` here, not `list[str]`"),
 name the type — but pair it with the plain-English reason in the
 same sentence. The rule is "no bare jargon", not "no technical
@@ -476,11 +470,15 @@ Before writing code, analyze the user's request:
 │   └── <pkg>/v1/
 │       └── <name>.py        # API definition (pydantic)
 ├── backend/
-│   └── src/
-│       ├── main.py          # Application entrypoint
-│       └── servicers/
-│           └── <name>.py    # Servicer implementation
+│   ├── .pytest.ini          # pythonpath: src/ api/ ../api/
+│   ├── src/
+│   │   ├── main.py          # Application entrypoint
+│   │   └── servicers/
+│   │       └── <name>.py    # Servicer implementation
+│   └── tests/
+│       └── <name>_test.py   # One test per user story
 └── web/
+    ├── .env.development     # VITE_REBOOT_URL=http://localhost:9991
     ├── package.json
     ├── tsconfig.json
     ├── tsconfig.app.json
@@ -507,8 +505,7 @@ Key differences from a `chat-app` layout:
 
 ## Step-by-Step Build Flow
 
-**Only execute after plan approval. All commands run from the
-application directory.**
+**All commands run from the application directory.**
 
 1. Create `.python-version`, `pyproject.toml`, `.rbtrc`, and
    `.mypy.ini` — same shape as in
@@ -524,39 +521,34 @@ application directory.**
    marker → context-type rules in
    `python/references/api-methods.md`. Do **not** add `mcp=Tool()`
    or `UI()` — those are chat-app only.
-4. `uv run rbt generate`.
+4. `uv run rbt generate`. Don't read what it wrote: the signature
+   your servicer must match is in `python/references/api-methods.md`
+   ("The Servicer Signature Each Declaration Obliges").
 5. Write the servicer (`backend/src/servicers/<name>.py`) —
    context-type patterns in `python/references/servicer-*.md`.
 6. Write `main.py` — `python/references/lifecycle-application-entry.md`.
 7. Initialize the React app at `web/` with your preferred tool
    (e.g. `npm create vite@latest web -- --template react-ts`) or
    a Reboot-provided template if one exists for plain web apps.
+   Read [`references/react-client.md`](references/react-client.md)
+   now — it has the `package.json` dependency set, the `dedupe`
+   entry the Vite config needs, and `web/.env.development` with
+   `VITE_REBOOT_URL`.
 8. `cd web && npm install` and add the Reboot React client
    package(s) per your project's `package.json`.
 9. `uv run rbt generate` again — the React bindings need
    `node_modules` to resolve types correctly.
-10. Wire `main.tsx` with `RebootClientProvider`, then build `App.tsx`
-    and the page components, calling generated `use<Type>()` hooks
-    for reader subscriptions and mutations. Field-name conversion is
-    Python-snake → TypeScript-camel; request/response types are
-    Zod-validated. A reader hook returns both `isLoading` and
-    `response`: use `isLoading` (the stream's connection state) for
-    loading/disconnected indicators (`!isLoading`, debounced, is a
-    connected/disconnected badge) and `response !== undefined` to
-    guard data access (it's also the only one that narrows
-    `response`'s `T | undefined` type). They diverge: an aborted
-    reader is `!isLoading` with no `response`; a reconnect is
-    `isLoading` with stale `response`. Transport disconnects
-    auto-reconnect and do **not** surface via `aborted`, so don't
-    reach for `aborted` or a heartbeat for an online/offline badge.
-    When a hook's `id` comes from the authenticated user, guard the
-    component so it only mounts once the id is real — see "Feeding
-    the user's identity into hooks" above. Never fabricate a
-    placeholder id to get past the non-empty-id validation.
+10. Build the frontend from
+    [`references/react-client.md`](references/react-client.md): the
+    provider and its `url`, the generated hook/mutator/error
+    declarations, sign-in, and typed errors are all written out
+    there. Write the calls from that reference and do **not** open
+    `web/src/api/**/*_rbt_react.ts` to check them — it is tens of
+    thousands of lines that then ride along on every later turn.
 11. `cd web && npm run build` (sanity check the bundle).
 12. **Write and run backend unit tests covering each user-facing
     user story before handing the app off.** Enumerate the user
-    stories from the plan — every action the user should be able
+    stories from the design — every action the user should be able
     to _do_ in the UI (e.g. "sign up and see my profile",
     "submit the form and see the result on the dashboard",
     "delete an item and have it disappear"). Write one test
@@ -564,7 +556,10 @@ application directory.**
     `backend/tests/<servicer>_test.py`, following the patterns
     in `python/references/testing-project-setup.md`,
     `python/references/testing-harness.md`, and
-    `python/references/testing-external-context.md`. Use one
+    `python/references/testing-external-context.md`. When a test fails
+    for a reason that looks like it is inside the framework, check
+    `python/references/patterns-idempotency.md` and
+    `patterns-common-gotchas.md` before reading `site-packages`. Use one
     `IsolatedAsyncioTestCase`, one external context per test
     (`name=f"test-{self.id()}"`), and
     `Service.ref(id).method(context, ...)` for all calls —
