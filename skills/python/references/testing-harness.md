@@ -204,20 +204,34 @@ be attributed to a user.
 ## Auto-Construct Under Auth
 
 If a state type has a real authorizer that gates its constructor —
-typically the case for `User`-shaped front-door types — the MCP session
-hook in production calls `_auto_construct` to create the state for an
-authenticated user. Tests that don't use MCP skip that hook, so trigger
-it manually right after creating the context:
+typically the case for `User`-shaped front-door types — the framework
+calls `_authenticated` to create the state for an authenticated user
+whenever a token is minted for them. `create_external_context_as(...)`
+and `make_valid_oauth_access_token(...)` mint a token, so they
+construct the `User` as a side effect and most tests need no manual
+setup. To construct the state for a user no context was created for,
+call `_authenticated` directly with an app-internal context:
 
 ```python
-await UserServicer._auto_construct(
-    self.context,
+await UserServicer._authenticated(
+    self.rbt.create_external_context(name="internal", app_internal=True),
     state_id=self.user_id,
 )
 ```
 
 Symptom if you forget: the first call into `User.ref(self.user_id)`
 aborts because the state was never constructed.
+
+To exercise a servicer's `set_claims`, deliver identity claims the
+way a real sign-in does — pass `claims=` to
+`make_valid_oauth_access_token` (or to `_authenticated` directly):
+
+```python
+token = await self.rbt.make_valid_oauth_access_token(
+    user_id=self.user_id,
+    claims={"email": "alice@example.com"},
+)
+```
 
 ## Last Resort: Permissive Authorizers
 
@@ -252,3 +266,83 @@ This is exactly why "write tests for each user story before
 handing the app off" is in the `chat-app` and `web-app` build
 flows: the tests catch contract bugs that a manual click-through
 won't surface for several minutes.
+
+## Asserting a Typed Error — and Keeping `mypy` Happy
+
+A method that declares `errors=[QuotaExceededError, ...]` raises
+`<Type>.<Method>Aborted` whose `.error` is the typed error. Two
+things trip people up:
+
+1. The generated `Aborted` type is per-method:
+   `TaskList.AddTaskAborted`, not a bare `Aborted`.
+2. `.error` is typed as a **union** of your declared errors plus
+   every framework error (`Cancelled`, `PermissionDenied`,
+   `Unknown`, …). `mypy` therefore rejects `error.limit` with
+   `Item "PermissionDenied" of "QuotaExceededError | Cancelled | ..." has no attribute "limit"` until you narrow it.
+
+```python
+with self.assertRaises(TaskList.AddTaskAborted) as caught:
+    await TaskList.ref(list_id).add_task(alice, title="one too many")
+
+error = caught.exception.error
+assert isinstance(error, QuotaExceededError)  # Narrows the union.
+self.assertEqual(error.limit, 10)
+```
+
+`unittest`'s `assertIsInstance` checks at runtime but does **not**
+narrow for `mypy`; a plain `assert isinstance(...)` does both. Use
+the `assert` form, or pair the two.
+
+## Racing Two Mutations in One Test
+
+A concurrency test issues both calls at once and asserts exactly one
+survives. Two rules make it work:
+
+- **One external context per concurrent caller.** Contexts are not
+  safe to use from two places at once, and a `ref()` is bound to
+  the context that first used it (`MixedContextsError`). Create a
+  second context for the same user id when a single user races
+  themselves from two sessions.
+- **Gather with `return_exceptions=True`**, then partition — the
+  loser raises, and letting `gather` propagate it would hide the
+  winner.
+
+- **Set up a state where exactly one call can succeed.** Two
+  concurrent calls that are both individually legal both succeed —
+  that tests nothing. The test needs a rule that only one of them
+  can satisfy: the last slot under a quota, the last item in stock,
+  a balance that covers one of the two transfers.
+
+```python
+# Precondition: the rule allows 10 open tasks, and 9 already exist,
+# so exactly one of the two racing calls below can be allowed.
+for i in range(9):
+    await TaskList.ref(list_a).add_task(self.alice, title=f"t{i}")
+
+alice2 = await self.rbt.create_external_context_as(
+    name=f"alice2-{self.id()}", user_id=ALICE,
+)
+results = await asyncio.gather(
+    TaskList.ref(list_a).add_task(self.alice, title="race-a"),
+    TaskList.ref(list_b).add_task(alice2, title="race-b"),
+    return_exceptions=True,
+)
+failures = [r for r in results if isinstance(r, BaseException)]
+self.assertEqual(len(results) - len(failures), 1)
+self.assertIsInstance(failures[0], TaskList.AddTaskAborted)
+
+# And the invariant actually held — not just "one call raised".
+profile = await User.ref(ALICE).profile(self.alice)
+self.assertEqual(profile.open_task_count, 10)
+```
+
+Assert the invariant, not only the exception. A test that checks
+"one of them failed" passes even if the winner corrupted the
+counter on the way through.
+
+Reboot serializes writers on the same actor and rolls transactions
+back all-or-nothing, so routing the shared invariant (a counter, a
+quota, a balance) through **one** actor is what makes "exactly one
+wins" true. If the invariant is spread across two actors with no
+transaction covering both, the race is genuinely lossy and no test
+setup will fix it.
