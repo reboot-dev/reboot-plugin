@@ -1,7 +1,8 @@
 # Reboot Plugin
 
 A plugin for building on [Reboot](https://reboot.dev) from your coding
-agent. The same skills work in both **Claude Code** and **Codex**.
+agent. The same skills work in **Claude Code**, **Codex**, and
+**Hermes Agent**.
 
 ## Included Skills
 
@@ -115,6 +116,21 @@ If you check out the plugin and work inside it, the bundled
 `.agents/skills` directory makes Codex discover the **skills** with no
 install at all (skills only — hooks and the PATH prepend still need the
 full install).
+
+### Hermes Agent
+
+Hermes supports the portable [Agent Plugins v1 specification](https://agent-plugins.org/specification)
+and reads the root-level [plugin manifest](https://agent-plugins.org/plugin-authors/manifest).
+It registers the bundled skills under the `reboot:` namespace. Install it with:
+
+```bash
+hermes plugins install reboot-dev/reboot-plugin --enable
+```
+
+The package ships skills only: it does not execute plugin Python, configure an
+MCP server, alter Hermes sandboxing, or auto-approve commands. Restart Hermes
+(or start a new session) after installation, then load a skill such as
+`reboot:app` or ask to build a Reboot app.
 
 ## Differences in Codex vs. Claude Code
 

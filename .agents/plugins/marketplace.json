@@ -8,7 +8,7 @@
       "name": "reboot",
       "source": {
         "source": "local",
-        "path": "./plugins/reboot"
+        "path": "./"
       },
       "policy": {
         "installation": "AVAILABLE"
