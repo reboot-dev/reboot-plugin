@@ -1,6 +1,6 @@
 ---
 name: feature
-description: Specify a Reboot application's feature before and while building it, as a Gherkin `.feature` file the tests run and the dashboard shows. Use whenever the user asks for a new capability or a change to one ("add transfers", "users should be able to..."), before touching the API or code; and when converting an existing test suite to feature files. Agrees on the feature in plain English first, writes it down tagged `@wip`, builds it with the `python` / `web-app` / `mcp-ui` skills, then iterates on scenarios with the user until they agree to take the tag off.
+description: Specify a Reboot application's feature before and while building it, as a Gherkin `.feature` file the tests run and the dashboard shows. Use whenever the user asks for a new capability or a change to one ("add transfers", "users should be able to..."), before touching the API or code; and when converting an existing test suite to feature files. Agrees on the feature in plain English first, writes it down tagged `@wip`, builds it with the `python` / `web-app` / `mcp-app` skills, then iterates on scenarios with the user until they agree to take the tag off.
 argument-hint: [<feature-description>]
 allowed-tools: Bash, Read, Write, Glob, Grep, Edit, AskUserQuestion
 ---
@@ -98,7 +98,7 @@ Tell the user it is there.
 ## Step 3 — Build the feature
 
 Change the API, the servicers, and the frontend with the `python`
-skill and, for the frontend, the `web-app` or `mcp-ui` skill. Two
+skill and, for the frontend, the `web-app` or `mcp-app` skill. Two
 rules of theirs matter most here:
 
 - **Every property gets a `description=`** on its `Field(...)`,
@@ -120,8 +120,8 @@ run it. Concretely:
 - **Write each scenario in the built-in steps** (`testing-features.md`),
   named for the situation, under the rule it illustrates, or at the
   feature's top level when it illustrates no rule.
-- **Let a factory make the id up**: `"alice" creates an `Account`via`open``and`the resulting state id is saved as "account
-  id"`, then `<account id>`. Give an id only when it means something
+- **Let a factory make the id up**: `"alice" creates an `Account`via`open``and`the resulting state id is saved as <account
+  id>`, then `<account id>`. Give an id only when it means something
   to the application (a user id, a singleton the code refers to).
 - **Move `@wip` down as scenarios land**: once a rule or scenario
   is written, put `@wip` on it and take it off the feature, so the
