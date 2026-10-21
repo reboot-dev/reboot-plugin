@@ -1,20 +1,20 @@
 ---
-title: Project Shell — MCP UI Deltas
+title: Project Shell — MCP App Deltas
 impact: CRITICAL
 impactDescription: The shell files (`.rbtrc`, `pyproject.toml`, `.python-version`, `main.py`) wire the build, the dev server, the HMR routing, and the entry point — wrong shapes break either codegen or live reload before the app even boots.
 tags: project, shell, rbtrc, pyproject, python-version, main, application-entry, hmr, dist
 ---
 
-## Project Shell — MCP UI Deltas
+## Project Shell — MCP App Deltas
 
 The `python` skill covers the canonical project shape
 (`lifecycle-project-setup.md`) and the `.rbtrc` format
 (`lifecycle-rbtrc.md`). That shape includes a project-root
 `.mypy.ini` and a project-root `.gitignore` (templates in
 `lifecycle-project-setup.md`) — create both when scaffolding; they
-have no MCP UI delta (the base `.gitignore` already covers
+have no MCP App delta (the base `.gitignore` already covers
 `frontend/api/`, `frontend/dist/`, and `node_modules/`). What an
-MCP UI adds on top:
+MCP App adds on top:
 
 ### `.python-version`
 
@@ -25,9 +25,9 @@ MCP UI adds on top:
 ### `.rbtrc`
 
 Same shape as `python/references/lifecycle-rbtrc.md`. Chat
-apps add `--default-config=hmr` plus `:hmr` and `:dist` named
-configs that route Envoy to a Vite dev server (HMR) or a built
-`frontend/dist/` (production):
+apps add `--default-config=ports` plus `:ports` and `:dist` named
+configs that route Envoy to a Vite dev server (HMR) or serve the
+built MCP Apps from `frontend/dist/mcp/` (production):
 
 ```
 # Find API definitions in 'api/'.
@@ -56,20 +56,42 @@ dev run --env-file=.env
 # Run the application!
 dev run --application=backend/src/main.py
 
-# Default to HMR mode when no --config is specified.
-dev run --default-config=hmr
+# Default to named URLs via portless (https://github.com/vercel-labs/portless)
+# when no --config is specified: the app is https://<project-name>.localhost, serving
+# the MCP Apps (and a web app) from Vite, run as `cd frontend && npm run dev`
+# (`portless frontend-<project-name> vite`) at https://frontend-<project-name>.localhost,
+# serves the MCP Apps at https://<project-name>.localhost. Needs the `portless`
+# CLI and its proxy (`portless proxy start`).
+dev run --default-config=portless
 
-# HMR: Vite dev server proxied through Envoy.
-# Run Vite in a separate terminal: cd frontend && npm run dev
-# Envoy routes "/__/frontend/**" to Vite for HMR support.
-dev run --frontend-root-path=frontend
+# HMR: the MCP Apps are proxied from the Vite dev server through Envoy,
+# in either config.
 
-dev run:hmr --frontend-host=http://localhost:4444
+dev run:portless --portless
+dev run:portless --frontend-url=https://frontend-<project-name>.localhost
+dev run:portless --mcp-app
+# A dual-frontend app also serves its web app from the dev server, at `/`:
+# dev run:portless --web-app
 
-# Dist mode: serve pre-built artifacts from "frontend/dist/" (no Vite HMR).
+# Plain ports instead: `rbt dev run --config=ports`, with Vite run as
+# `cd frontend && npm run dev:ports`.
+dev run:ports --frontend-url=http://localhost:5173
+dev run:ports --mcp-app
+# dev run:ports --web-app
+
+# Dist mode: serve the built MCP Apps from "frontend/dist/mcp/" (no Vite HMR).
 # Usage: uv run rbt dev run --config=dist
 # Requires: cd frontend && npm run build
-dev run:dist --frontend-dist-path=frontend/dist
+dev run:dist --mcp-app-dist-path=frontend/dist/mcp
+# A dual-frontend app also serves its built web app at `/`:
+# dev run:dist --web-app-dist-path=frontend/dist/web
+
+# The developer dashboard (`rbt dashboard`) too: it is
+# https://dashboard-<project-name>.localhost by default, or on the plain
+# port http://127.0.0.1:9871 with `rbt dashboard --config=ports`.
+dashboard --default-config=portless
+dashboard:portless --portless
+dashboard:ports --no-portless
 
 # When expunging, expunge that state we've saved.
 dev expunge --application-name=<project-name>
@@ -78,9 +100,11 @@ dev expunge --application-name=<project-name>
 # Cloud, whose containers run `CMD ["rbt", "serve", "run"]` — see
 # `python/references/lifecycle-dockerfile.md`). Mirrors the `dev run`
 # block above, minus the dev-only knobs (`--watch`, `--env-file`,
-# the `:hmr`/`:dist` configs).
+# the `:ports`/`:dist` configs).
 serve run --python
-serve run --frontend-dist-path=frontend/dist --frontend-root-path=frontend
+serve run --mcp-app-dist-path=frontend/dist/mcp
+# A dual-frontend app also serves its built web app at `/`:
+# serve run --web-app-dist-path=frontend/dist/web
 serve run --application=backend/src/main.py
 serve run --application-name=<project-name>
 serve run --tls=external
@@ -89,7 +113,7 @@ serve run --tls=external
 ### `pyproject.toml`
 
 The reboot-python `lifecycle-project-setup.md` covers the base shape.
-MCP UIs usually pull in a few extra runtime deps:
+MCP Apps usually pull in a few extra runtime deps:
 
 ```toml
 [project]
@@ -98,7 +122,6 @@ version = "0.1.0"
 requires-python = ">= 3.10"
 dependencies = [
     "httpx>=0.27,<1.0",
-    "uuid7>=0.1.0",
     "anyio>=4.0.0",
     "reboot>=1.0.3",
 ]
@@ -117,7 +140,7 @@ dashboard run on; a development environment always installs it.
 
 ### `example_prompts.py`
 
-Every MCP UI ships a list of `ExamplePrompt`s — the
+Every MCP App ships a list of `ExamplePrompt`s — the
 ready-to-send chat scenarios the root-page wizard offers users so
 they can try the app the moment it's running. Keep them in their own
 `backend/src/example_prompts.py` module so `main.py` stays a thin
@@ -164,7 +187,7 @@ rather than only calling tool-only methods — see "Example Prompts"
 in `SKILL.md` for the full rule. The counter set above does this
 with its "…and show me the counter" / "show me the wins counter"
 turns. See the worked set in
-`public/reboot/examples/mcp-ui-counter/backend/src/example_prompts.py`.
+`public/reboot/examples/mcp-app-counter/backend/src/example_prompts.py`.
 
 ### `main.py`
 
@@ -207,7 +230,7 @@ if __name__ == "__main__":
 
 `title` and `description` are also surfaced by the wizard, so set
 both to something human-readable (`title` defaults to the
-application name if omitted). A typical MCP UI has no `initialize`
+application name if omitted). A typical MCP App has no `initialize`
 hook — the auto-constructed `User` covers per-user setup and
 application-type instances are created on demand by `User`'s
 Transaction methods.

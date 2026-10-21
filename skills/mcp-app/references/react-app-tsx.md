@@ -99,7 +99,7 @@ import {
 
 ```tsx
 import { useEffect, useRef, useState, type FC } from "react";
-import { useCounter } from "@api/mcp_ui_counter/v1/counter_rbt_react";
+import { useCounter } from "@api/mcp_app_counter/v1/counter_rbt_react";
 import css from "./App.module.css";
 
 export const ClickerApp: FC = () => {
